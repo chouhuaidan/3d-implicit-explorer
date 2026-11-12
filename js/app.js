@@ -205,11 +205,12 @@
 
             // Show GLSL preview
             if (glslPreview) {
-                glslPreview.textContent = 'f(x,y,z) = ' + result.glsl;
+                const preview = 'f(x,y,z) = ' + result.glsl;
+                glslPreview.textContent = result.helpers ? result.helpers + '\n\n' + preview : preview;
             }
 
             // Update renderer
-            const compileResult = this.renderer.updateEquation(result.glsl);
+            const compileResult = this.renderer.updateEquation(result.glsl, result.helpers);
             
             if (!compileResult.success) {
                 errorEl.textContent = 'Shader error: ' + compileResult.error;

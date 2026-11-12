@@ -125,10 +125,11 @@ void main() {
     /**
      * Builds the fragment shader source code with the implicit equation injected.
      * @param {string} glslExpression 
+     * @param {string} glslHelpers
      * @returns {string} Fragment shader source
      * @private
      */
-    _buildFragmentShaderSource(glslExpression) {
+    _buildFragmentShaderSource(glslExpression, glslHelpers = '') {
       return `#version 300 es
 precision highp float;
 precision highp int;
@@ -265,6 +266,8 @@ float safePow(float a, float b) {
 bool isInvalid(float v) {
     return isnan(v) || isinf(v) || (v != v);
 }
+
+${glslHelpers}
 
 // Evaluates the implicit surface equation f(x, y, z)
 float evaluateImplicit(vec3 p) {
@@ -502,9 +505,10 @@ void main() {
      * Updates the implicit equation and recompiles the fragment shader.
      * Keeps the previous program active if compilation fails.
      * @param {string} glslExpression GLSL expression representing f(x, y, z) = 0.
+     * @param {string} glslHelpers Helper function definitions for the expression.
      * @returns {{success: boolean, error: string|null}}
      */
-    updateEquation(glslExpression) {
+    updateEquation(glslExpression, glslHelpers = '') {
       let expr = (glslExpression || '').trim();
       if (!expr) {
         this.lastCompilationResult = { success: false, error: 'Empty equation expression.' };
@@ -523,7 +527,7 @@ void main() {
       }
 
       const gl = this.gl;
-      const fsSource = this._buildFragmentShaderSource(expr);
+      const fsSource = this._buildFragmentShaderSource(expr, glslHelpers);
 
       const fs = gl.createShader(gl.FRAGMENT_SHADER);
       gl.shaderSource(fs, fsSource);

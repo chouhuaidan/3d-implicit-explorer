@@ -2,13 +2,15 @@
  * LaTeX to GLSL Compiler
  *
  * Converts mathematical equations written in LaTeX into valid GLSL expressions.
- * Exposes window.latexToGLSL(latexString) returning { glsl: string|null, error: string|null }.
+ * Exposes window.latexToGLSL(latexString) returning a GLSL expression, any helper
+ * function definitions required by it, and a parse error if compilation fails.
  *
  * Supports:
  * - Functions: trig, inverse trig, hyperbolic, exp, log (natural, base 10, base n),
  *   sqrt / nth root, abs, floor, ceil, gcd, lcm, mod, sign, min, max.
  * - Operators: +, -, *, /, powers, fractions, subscripts, absolute values, equals.
  * - Implicit multiplication between adjacent tokens.
+ * - Finite summations with scoped indices and nested or expression bounds.
  * - Auto-formatting all numbers as GLSL floats (e.g. 2 -> 2.0).
  * - Equations split as LHS - RHS: "((LHS) - (RHS))", or single expression if no '='.
  */
@@ -295,6 +297,12 @@
             break;
 
           // Operators
+          case 'sum':
+            tokens.push({ type: 'SUM', value: 'sum', pos: start });
+            break;
+          case 'limits':
+          case 'nolimits':
+            break;
           case 'cdot':
           case 'times':
           case 'ast':
@@ -481,8 +489,8 @@
       this.type = 'Variable';
       this.name = name;
     }
-    toGLSL() {
-      return this.name;
+    toGLSL(context) {
+      return context?.bindings.get(this.name) ?? this.name;
     }
   }
 
@@ -501,8 +509,8 @@
       this.type = 'Paren';
       this.expr = expr;
     }
-    toGLSL() {
-      return `(${this.expr.toGLSL()})`;
+    toGLSL(context) {
+      return `(${this.expr.toGLSL(context)})`;
     }
   }
 
@@ -511,8 +519,8 @@
       this.type = 'Abs';
       this.expr = expr;
     }
-    toGLSL() {
-      return `abs(${this.expr.toGLSL()})`;
+    toGLSL(context) {
+      return `abs(${this.expr.toGLSL(context)})`;
     }
   }
 
@@ -521,14 +529,14 @@
       this.type = 'UnaryMinus';
       this.expr = expr;
     }
-    toGLSL() {
+    toGLSL(context) {
       if (this.expr.type === 'Number') {
         return `-${toGLSLFloat(this.expr.value)}`;
       }
       if (this.expr.type === 'Paren') {
-        return `-${this.expr.toGLSL()}`;
+        return `-${this.expr.toGLSL(context)}`;
       }
-      return `(-${this.expr.toGLSL()})`;
+      return `(-${this.expr.toGLSL(context)})`;
     }
   }
 
@@ -538,9 +546,9 @@
       this.num = num;
       this.den = den;
     }
-    toGLSL() {
-      const numStr = (this.num.type === 'ExpressionChain') ? `(${this.num.toGLSL()})` : this.num.toGLSL();
-      const denStr = (this.den.type === 'ExpressionChain') ? `(${this.den.toGLSL()})` : this.den.toGLSL();
+    toGLSL(context) {
+      const numStr = (this.num.type === 'ExpressionChain') ? `(${this.num.toGLSL(context)})` : this.num.toGLSL(context);
+      const denStr = (this.den.type === 'ExpressionChain') ? `(${this.den.toGLSL(context)})` : this.den.toGLSL(context);
       return `(${numStr} / ${denStr})`;
     }
   }
@@ -551,12 +559,12 @@
       this.arg = arg;
       this.degree = degree;
     }
-    toGLSL() {
-      const argStr = this.arg.toGLSL();
+    toGLSL(context) {
+      const argStr = this.arg.toGLSL(context);
       if (this.degree === null) {
         return `sqrt(${argStr})`;
       }
-      const degStr = this.degree.toGLSL();
+      const degStr = this.degree.toGLSL(context);
       if (this.degree.type === 'Number' || this.degree.type === 'Variable') {
         return `pow(${argStr}, (1.0 / ${degStr}))`;
       }
@@ -571,19 +579,19 @@
       this.base = base;
       this.power = power;
     }
-    toGLSL() {
-      const argStr = this.arg.toGLSL();
+    toGLSL(context) {
+      const argStr = this.arg.toGLSL(context);
       let res;
       if (this.base === null) {
         // Base 10 log
         res = `(log(${argStr}) / log(10.0))`;
       } else {
         // Base n log
-        const baseStr = this.base.toGLSL();
+        const baseStr = this.base.toGLSL(context);
         res = `(log(${argStr}) / log(${baseStr}))`;
       }
       if (this.power !== null) {
-        res = `pow(${res}, ${this.power.toGLSL()})`;
+        res = `pow(${res}, ${this.power.toGLSL(context)})`;
       }
       return res;
     }
@@ -596,52 +604,52 @@
       this.args = args;
       this.power = power;
     }
-    toGLSL() {
+    toGLSL(context) {
       const name = this.name.toLowerCase();
       let callStr;
 
       // Special GLSL function names
       if (name === 'gcd') {
-        const a = this.args[0] ? this.args[0].toGLSL() : '0.0';
-        const b = this.args[1] ? this.args[1].toGLSL() : '0.0';
+        const a = this.args[0] ? this.args[0].toGLSL(context) : '0.0';
+        const b = this.args[1] ? this.args[1].toGLSL(context) : '0.0';
         callStr = `gcdFunc(${a}, ${b})`;
       } else if (name === 'lcm') {
-        const a = this.args[0] ? this.args[0].toGLSL() : '0.0';
-        const b = this.args[1] ? this.args[1].toGLSL() : '0.0';
+        const a = this.args[0] ? this.args[0].toGLSL(context) : '0.0';
+        const b = this.args[1] ? this.args[1].toGLSL(context) : '0.0';
         callStr = `lcmFunc(${a}, ${b})`;
       } else if (name === 'mod') {
-        const a = this.args[0] ? this.args[0].toGLSL() : '0.0';
-        const b = this.args[1] ? this.args[1].toGLSL() : '0.0';
+        const a = this.args[0] ? this.args[0].toGLSL(context) : '0.0';
+        const b = this.args[1] ? this.args[1].toGLSL(context) : '0.0';
         callStr = `modFunc(${a}, ${b})`;
       } else if (name === 'ln') {
-        const a = this.args[0] ? this.args[0].toGLSL() : '0.0';
+        const a = this.args[0] ? this.args[0].toGLSL(context) : '0.0';
         callStr = `log(${a})`;
       } else if (name === 'arcsin' || name === 'asin') {
-        const a = this.args[0] ? this.args[0].toGLSL() : '0.0';
+        const a = this.args[0] ? this.args[0].toGLSL(context) : '0.0';
         callStr = `asin(${a})`;
       } else if (name === 'arccos' || name === 'acos') {
-        const a = this.args[0] ? this.args[0].toGLSL() : '0.0';
+        const a = this.args[0] ? this.args[0].toGLSL(context) : '0.0';
         callStr = `acos(${a})`;
       } else if (name === 'arctan' || name === 'atan') {
-        const a = this.args[0] ? this.args[0].toGLSL() : '0.0';
+        const a = this.args[0] ? this.args[0].toGLSL(context) : '0.0';
         if (this.args.length > 1) {
-          const b = this.args[1].toGLSL();
+          const b = this.args[1].toGLSL(context);
           callStr = `atan(${a}, ${b})`;
         } else {
           callStr = `atan(${a})`;
         }
       } else if (name === 'sign' || name === 'sgn') {
-        const a = this.args[0] ? this.args[0].toGLSL() : '0.0';
+        const a = this.args[0] ? this.args[0].toGLSL(context) : '0.0';
         callStr = `sign(${a})`;
       } else {
         // Standard function
         const glslName = name;
-        const argsStr = this.args.map(arg => arg.toGLSL()).join(', ');
+        const argsStr = this.args.map(arg => arg.toGLSL(context)).join(', ');
         callStr = `${glslName}(${argsStr})`;
       }
 
       if (this.power !== null) {
-        callStr = `pow(${callStr}, ${this.power.toGLSL()})`;
+        callStr = `pow(${callStr}, ${this.power.toGLSL(context)})`;
       }
       return callStr;
     }
@@ -653,13 +661,13 @@
       this.base = base;
       this.exp = exp;
     }
-    toGLSL() {
-      let baseStr = this.base.toGLSL();
+    toGLSL(context) {
+      let baseStr = this.base.toGLSL(context);
       if (this.base.type === 'TermChain' || this.base.type === 'ExpressionChain') {
         baseStr = `(${baseStr})`;
       }
 
-      let expStr = this.exp.toGLSL();
+      let expStr = this.exp.toGLSL(context);
       if (this.exp.type === 'TermChain' || this.exp.type === 'ExpressionChain') {
         expStr = `(${expStr})`;
       }
@@ -673,14 +681,14 @@
       this.type = 'TermChain';
       this.factors = factors; // [{ op: null|'*'|'/', factor: Node }]
     }
-    toGLSL() {
+    toGLSL(context) {
       if (this.factors.length === 1) {
-        return this.factors[0].factor.toGLSL();
+        return this.factors[0].factor.toGLSL(context);
       }
-      let s = this.factors[0].factor.toGLSL();
+      let s = this.factors[0].factor.toGLSL(context);
       for (let i = 1; i < this.factors.length; i++) {
         const op = this.factors[i].op || '*';
-        s += ` ${op} ${this.factors[i].factor.toGLSL()}`;
+        s += ` ${op} ${this.factors[i].factor.toGLSL(context)}`;
       }
       return s;
     }
@@ -691,14 +699,14 @@
       this.type = 'ExpressionChain';
       this.terms = terms; // [{ op: null|'+'|'-', term: Node }]
     }
-    toGLSL() {
+    toGLSL(context) {
       if (this.terms.length === 1) {
-        return this.terms[0].term.toGLSL();
+        return this.terms[0].term.toGLSL(context);
       }
-      let s = this.terms[0].term.toGLSL();
+      let s = this.terms[0].term.toGLSL(context);
       for (let i = 1; i < this.terms.length; i++) {
         const op = this.terms[i].op || '+';
-        s += ` ${op} ${this.terms[i].term.toGLSL()}`;
+        s += ` ${op} ${this.terms[i].term.toGLSL(context)}`;
       }
       return s;
     }
@@ -710,13 +718,55 @@
       this.lhs = lhs;
       this.rhs = rhs;
     }
-    toGLSL() {
-      const lhsGLSL = this.lhs.toGLSL();
+    toGLSL(context) {
+      const lhsGLSL = this.lhs.toGLSL(context);
       if (this.rhs === null) {
         return lhsGLSL;
       }
-      const rhsGLSL = this.rhs.toGLSL();
+      const rhsGLSL = this.rhs.toGLSL(context);
       return `((${lhsGLSL}) - (${rhsGLSL}))`;
+    }
+  }
+
+  class SumNode {
+    constructor(index, lower, upper, body) {
+      this.index = index;
+      this.lower = lower;
+      this.upper = upper;
+      this.body = body;
+    }
+
+    toGLSL(context) {
+      const id = context.nextSum.value++;
+      const name = `latexSum${id}`;
+      const index = `sumIndex${id}`;
+      const parameters = ['x', 'y', 'z', ...context.bindings.values()];
+      const lower = this.lower.toGLSL(context);
+      const upper = this.upper.toGLSL(context);
+
+      const bindings = new Map(context.bindings);
+      bindings.set(this.index, index);
+      const body = this.body.toGLSL({ ...context, bindings });
+      // Emit inner helpers first so their definitions precede their callers.
+      context.helpers.push(`float ${name}(${parameters.map(param => `float ${param}`).join(', ')}) {
+    float first = ceil(${lower});
+    float last = floor(${upper});
+    if (isnan(first) || isnan(last) || isinf(first) || isinf(last)) {
+        return uintBitsToFloat(0x7fc00000u);
+    }
+    if (first > last) return 0.0;
+    // Every integer in this interval can be represented by a highp float.
+    if (first < -16777216.0 || last > 16777216.0) {
+        return uintBitsToFloat(0x7fc00000u);
+    }
+    float total = 0.0;
+    for (float ${index} = first; ${index} <= last; ${index} += 1.0) {
+        total += ${body};
+        if (${index} == last) break;
+    }
+    return total;
+}`);
+      return `${name}(${parameters.join(', ')})`;
     }
   }
 
@@ -777,6 +827,7 @@
         case 'FUNC':
         case 'LOG':
         case 'LN':
+        case 'SUM':
         case 'FRAC':
         case 'SQRT':
         case 'LPAREN':
@@ -882,9 +933,13 @@
       return this.parseAtom();
     }
 
-    // atom := NUMBER | VAR | CONST | FUNC | LOG | LN | SQRT | FRAC | LPAREN | LBRACKET | LBRACE | PIPE | LFLOOR | LCEIL
+    // atom := NUMBER | VAR | CONST | FUNC | LOG | LN | SQRT | FRAC | SUM | LPAREN | LBRACKET | LBRACE | PIPE | LFLOOR | LCEIL
     parseAtom() {
       const token = this.peek();
+
+      if (this.match('SUM')) {
+        return this.parseSum();
+      }
 
       // Number literal
       if (this.match('NUMBER')) {
@@ -1075,6 +1130,34 @@
       throw new Error(`Unexpected token '${token.value || token.type}' at position ${token.pos || this.pos}`);
     }
 
+    parseSum() {
+      const upperFirst = this.match('CARET');
+      const readUpper = () => {
+        if (!this.match('LBRACE')) return this.parseAtom();
+        const upper = this.parseExpression();
+        this.consume('RBRACE');
+        return upper;
+      };
+      let upper = upperFirst ? readUpper() : null;
+      this.consume('UNDERSCORE');
+      this.consume('LBRACE');
+      const index = this.parseAtom();
+      if (index.type !== 'Variable') {
+        throw new Error('Expected a summation index variable');
+      }
+      this.consume('EQUALS');
+      const lower = this.parseExpression();
+      this.consume('RBRACE');
+      if (!upperFirst) {
+        this.consume('CARET');
+        upper = readUpper();
+      }
+
+      // Products belong to the summand. Addition, equality, and closing
+      // delimiters end it unless enclosed in a group inside the summand.
+      return new SumNode(index.name, lower, upper, this.parseTerm());
+    }
+
     /**
      * Parses arguments for a function:
      * - (arg1, arg2, ...)
@@ -1124,7 +1207,7 @@
    * Compiles a LaTeX mathematical equation into a GLSL expression.
    *
    * @param {string} latexString The equation string to compile.
-   * @returns {{ glsl: string|null, error: string|null }}
+   * @returns {{ glsl: string|null, helpers?: string, error: string|null }}
    */
   function latexToGLSL(latexString) {
     if (typeof latexString !== 'string') {
@@ -1147,8 +1230,10 @@
         throw new Error(`Unexpected token '${remaining.value || remaining.type}' at position ${remaining.pos}`);
       }
 
-      const glsl = ast.toGLSL();
-      return { glsl: glsl, error: null };
+      const context = { bindings: new Map(), helpers: [], nextSum: { value: 0 } };
+      const glsl = ast.toGLSL(context);
+      const helpers = context.helpers.join('\n\n');
+      return helpers ? { glsl, helpers, error: null } : { glsl, error: null };
     } catch (err) {
       return {
         glsl: null,
